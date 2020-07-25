@@ -1,0 +1,2 @@
+requests==2.22.0
+beautifuksoup4==4.9.1
