@@ -1,26 +1,38 @@
 import re
 import sys
-
 import requests
 from urllib.request import urlopen
 from bs4 import BeautifulSoup
 
 
-def check_date(date):
-    if not re.match(r"^\d{2}[.]\d{2}$", date):
+# Проверяет действительность токена
+# token - токен бота
+def check_token(token) -> bool:
+    resp = requests.get("https://api.telegram.org/bot{}/".format(token) + 'getUpdates')
+    return resp.reason == 'OK'
+
+
+# Проверяет сообщение введенное пользователем, чтобы оно соответствовало формату: дд.мм
+# message - сообщение, отправленное пользователем
+def check_message(message) -> bool:
+    if not re.match(r"^\d{2}[.]\d{2}$", message):
         return False
 
-    day = int(date.split(".")[0])
-    month = int(date.split(".")[1])
+    day = int(message.split(".")[0])
+    month = int(message.split(".")[1])
 
     return 0 < day < 32 and 0 < month < 13
 
 
-def get_date(date):
-    return int(date.split(".")[0]), int(date.split(".")[1])
+# Разбивает дату на день и месяц
+# date - сообщение введенное пользователем
+def get_date(message) -> int:
+    return int(message.split(".")[0]), int(message.split(".")[1])
 
 
-def get_weather(attr):
+# Определяет по атрибуту изображения погоду
+# attr - часть названия атрибута картинки с html-страницы
+def get_weather(attr) -> str:
     if attr == 'icon_thumb_skc-d':
         return 'Солнечно'
     elif attr == 'icon_thumb_ovc-ra':
@@ -35,10 +47,13 @@ def get_weather(attr):
     return 'Неудалось определить погоду'
 
 
-def find_weather_forecast(row, day):
-    text = row.text
+# Парсит часть html-страницы, описывающую одень день
+# div - часть html-страницы, содержащая информацию о прогнозе погоды на день
+# day - день, на который нужно найти прогноз
+def find_weather_forecast(div, day) -> dict:
+    text = div.text
 
-    if len(row.attrs['class']) > 1 and row.attrs['class'][1] == 'climate-calendar-day_colorless_yes':
+    if len(div.attrs['class']) > 1 and div.attrs['class'][1] == 'climate-calendar-day_colorless_yes':
         return None
 
     t = re.findall(r"^\d+", text)[0]
@@ -46,7 +61,7 @@ def find_weather_forecast(row, day):
     if t != str(day):
         return None
 
-    img = row.contents[1].contents[0].attrs['class'][2]
+    img = div.contents[1].contents[0].attrs['class'][2]
     weather = get_weather(img)
 
     regex_result = re.findall(r"[+−]\d+°[+−]\d+°", text)
@@ -61,14 +76,23 @@ def find_weather_forecast(row, day):
     return [weather, temp, pressure, humidity]
 
 
+# Telegram бот, который присылает сводку погоды в Ярославле
 class WeatherBot:
-    _city_id = '2172797'
-    _month_arr = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october',
-                  'november', 'december']
+    # Идентификатор города Ярославль
+    city_id = '2172797'
 
+    # Массив содержащий названия месяцев, необходим для формирования url к нужному месяцу
+    month_arr = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october',
+                 'november', 'december']
+
+    # Конструктор telegram бота
+    # token - токен бота
     def __init__(self, token):
         self.api_url = "https://api.telegram.org/bot{}/".format(token)
 
+    # Метод, который отправляет запрос на получение входящих сообщений
+    # offset - идентификатор первого возвращаемого обновления
+    # timeout - таймаут запроса
     def get_updates(self, offset=None, timeout=30):
         method = 'getUpdates'
         params = {'timeout': timeout, 'offset': offset}
@@ -76,12 +100,16 @@ class WeatherBot:
         result_json = resp.json()['result']
         return result_json
 
-    def send_forecast(self, chat_id, text):
-        params = {'chat_id': chat_id, 'text': text}
+    # Метод, который отправляет ответ пользователю
+    # chat_id - идентификатор чата
+    # message - сообщение
+    def send_message(self, chat_id, message):
+        params = {'chat_id': chat_id, 'text': message}
         method = 'sendMessage'
         resp = requests.post(self.api_url + method, params)
         return resp
 
+    # Метод, который определяет последнее входящее сообщение
     def get_last_update(self):
         get_result = self.get_updates()
 
@@ -92,9 +120,12 @@ class WeatherBot:
 
         return last_update
 
+    # Метод, определяющий прогноз погоды на запрашиваемую дату
+    # day - день
+    # month - месяц
     def get_weather(self, day, month):
         html_doc = urlopen(
-            'https://yandex.ru/pogoda/yaroslavl/month/' + self._month_arr[month - 1] + '?via=cnav').read()
+            'https://yandex.ru/pogoda/yaroslavl/month/' + self.month_arr[month - 1] + '?via=cnav').read()
         soup = BeautifulSoup(html_doc, features="html.parser")
         div_arr = soup.findAll("div", {"class": "climate-calendar-day"})
 
@@ -107,12 +138,18 @@ class WeatherBot:
         return None
 
 
+# Функционирование telegram бота
 def main():
     if len(sys.argv) < 2:
-        print('Неверное количество аргументов')
+        print('Использование:\n\t weather_bot.py <токен>')
         return
 
     token = sys.argv[1]
+
+    if not check_token(token):
+        print('Недействительный токен')
+        return
+
     new_offset = None
     weather_bot = WeatherBot(token)
 
@@ -122,22 +159,23 @@ def main():
 
         last_update = weather_bot.get_last_update()
         last_update_id = last_update['update_id']
+        new_offset = last_update_id + 1
 
         if 'message' in last_update:
             message_type = 'message'
         elif 'edited_message' in last_update:
             message_type = 'edited_message'
-        else:
-            weather_bot.send_forecast(last_chat_id, 'Неверный тип сообщения')
-            continue
 
-        last_chat_text = last_update[message_type]['text']
         last_chat_id = last_update[message_type]['chat']['id']
 
-        new_offset = last_update_id + 1
+        if 'text' in last_update[message_type]:
+            last_chat_text = last_update[message_type]['text']
+        else:
+            weather_bot.send_message(last_chat_id, 'Неверный тип сообщения')
+            continue
 
-        if not check_date(last_chat_text):
-            weather_bot.send_forecast(last_chat_id, 'Неверная дата')
+        if not check_message(last_chat_text):
+            weather_bot.send_message(last_chat_id, 'Неправильный формат даты\nНеобходимо дд.мм')
             continue
 
         day, month = get_date(last_chat_text)
@@ -149,7 +187,7 @@ def main():
             for param in weather:
                 message += param + '\n'
 
-        weather_bot.send_forecast(last_chat_id, message)
+        weather_bot.send_message(last_chat_id, message)
 
 
 if __name__ == '__main__':
